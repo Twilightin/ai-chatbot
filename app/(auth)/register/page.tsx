@@ -39,7 +39,7 @@ export default function Page() {
 
       setIsSuccessful(true);
       updateSession();
-      router.refresh();
+      router.push("/"); // Redirect to chat page after successful sign up
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.status]);

@@ -129,72 +129,23 @@ function PureMultimodalInput({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploadQueue, setUploadQueue] = useState<string[]>([]);
 
-  // Helper: Convert image file to base64 data URL for vision models
-  const fileToBase64DataURL = useCallback((file: File): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        if (typeof reader.result === 'string') {
-          resolve(reader.result); // Returns data:image/jpeg;base64,...
-        } else {
-          reject(new Error('Failed to read file as data URL'));
-        }
-      };
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
-  }, []);
-
   const submitForm = useCallback(() => {
     window.history.pushState({}, "", `/chat/${chatId}`);
 
-    // Map attachments to correct format for chat API
-    const mappedParts = attachments
-      .map((attachment) => {
-        if (
-          attachment.contentType === "application/pdf" ||
-          attachment.contentType === "text/plain"
-        ) {
-          // PDF/TXT: send as file part with extracted text
-          // This way we can show a nice indicator in UI while sending full text to AI
-          const fullText = attachment.extractedText || "";
-          return {
-            type: "file" as const,
-            name: attachment.name,
-            url: attachment.url || "",
-            mediaType: attachment.contentType,
-            extractedText: fullText, // Full text for AI
-          };
-        } else if (
-          attachment.contentType === "image/png" ||
-          attachment.contentType === "image/jpeg" ||
-          attachment.contentType === "image/jpg"
-        ) {
-          // Images: send as file part with base64 url
-          return {
-            type: "file" as const,
-            url: attachment.url, // base64 data URL
-            name: attachment.name,
-            mediaType: attachment.contentType,
-          };
-        }
-        // Fallback: ignore unsupported types
-        return undefined;
-      })
-      .filter((part) => part !== undefined);
-
-    // Build parts array - only include text part if there's actual input
-    const parts: any[] = [...mappedParts];
-    if (input && input.trim()) {
-      parts.push({
-        type: "text" as const,
-        text: input,
-      });
-    }
-
     sendMessage({
       role: "user",
-      parts,
+      parts: [
+        ...attachments.map((attachment) => ({
+          type: "file" as const,
+          url: attachment.url,
+          name: attachment.name,
+          mediaType: attachment.contentType,
+        })),
+        {
+          type: "text",
+          text: input,
+        },
+      ],
     });
 
     setAttachments([]);
@@ -218,32 +169,6 @@ function PureMultimodalInput({
   ]);
 
   const uploadFile = useCallback(async (file: File) => {
-    // For images: Convert to base64 data URL directly (no server upload needed)
-    // This is the correct approach for vision models like GPT-4V
-    if (file.type === 'image/png' || file.type === 'image/jpeg' || file.type === 'image/jpg') {
-      try {
-        const base64DataUrl = await fileToBase64DataURL(file);
-        console.log('[Image Upload] Converted to base64:', {
-          name: file.name,
-          type: file.type,
-          size: file.size,
-          dataUrlPrefix: base64DataUrl.substring(0, 50)
-        });
-        
-        return {
-          url: base64DataUrl, // data:image/jpeg;base64,... format
-          name: file.name,
-          contentType: file.type,
-          // No extractedText for images
-        };
-      } catch (error) {
-        console.error('Image conversion error:', error);
-        toast.error("Failed to process image!");
-        return undefined;
-      }
-    }
-
-    // For PDF/TXT: Upload to server for text extraction
     const formData = new FormData();
     formData.append("file", file);
 
@@ -255,23 +180,20 @@ function PureMultimodalInput({
 
       if (response.ok) {
         const data = await response.json();
-        const { url, pathname, contentType, name, extractedText } = data;
+        const { url, pathname, contentType } = data;
 
         return {
           url,
-          name: name || pathname,
+          name: pathname,
           contentType,
-          extractedText: extractedText || "", // Ensure extractedText is a string
         };
       }
-      const { error, details } = await response.json();
-      console.error('Upload error:', error, details);
-      toast.error(error || "Upload failed");
-    } catch (error) {
-      console.error('Upload exception:', error);
+      const { error } = await response.json();
+      toast.error(error);
+    } catch (_error) {
       toast.error("Failed to upload file, please try again!");
     }
-  }, [fileToBase64DataURL]);
+  }, []);
 
   const _modelResolver = useMemo(() => {
     return myProvider.languageModel(selectedModelId);
@@ -309,6 +231,60 @@ function PureMultimodalInput({
     },
     [setAttachments, uploadFile]
   );
+  
+  const handlePaste = useCallback(
+    async (event: ClipboardEvent) => {
+      const items = event.clipboardData?.items;
+      if (!items) return;
+
+      const imageItems = Array.from(items).filter((item) =>
+        item.type.startsWith('image/'),
+      );
+
+      if (imageItems.length === 0) return;
+
+      // Prevent default paste behavior for images
+      event.preventDefault();
+
+      setUploadQueue((prev) => [...prev, 'Pasted image']);
+
+      try {
+        const uploadPromises = imageItems.map(async (item) => {
+          const file = item.getAsFile();
+          if (!file) return;
+          return uploadFile(file);
+        });
+
+        const uploadedAttachments = await Promise.all(uploadPromises);
+        const successfullyUploadedAttachments = uploadedAttachments.filter(
+          (attachment) =>
+            attachment !== undefined &&
+            attachment.url !== undefined &&
+            attachment.contentType !== undefined,
+        );
+
+        setAttachments((curr) => [
+          ...curr,
+          ...(successfullyUploadedAttachments as Attachment[]),
+        ]);
+      } catch (error) {
+        console.error('Error uploading pasted images:', error);
+        toast.error('Failed to upload pasted image(s)');
+      } finally {
+        setUploadQueue([]);
+      }
+    },
+    [setAttachments],
+  );
+
+  // Add paste event listener to textarea
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+
+    textarea.addEventListener('paste', handlePaste);
+    return () => textarea.removeEventListener('paste', handlePaste);
+  }, [handlePaste]);
 
   return (
     <div className={cn("relative flex w-full flex-col gap-4", className)}>
@@ -329,7 +305,6 @@ function PureMultimodalInput({
         ref={fileInputRef}
         tabIndex={-1}
         type="file"
-        accept="application/pdf,text/plain,image/png,image/jpeg"
       />
 
       <PromptInput

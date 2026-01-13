@@ -43,9 +43,13 @@ const client = postgres(process.env.POSTGRES_URL!);
 const db = drizzle(client);
 
 export async function getUser(email: string): Promise<User[]> {
+  console.log("getUser called with email:", email);
   try {
-    return await db.select().from(user).where(eq(user.email, email));
+    const result = await db.select().from(user).where(eq(user.email, email));
+    console.log("getUser result:", result);
+    return result;
   } catch (_error) {
+    console.error("getUser error:", _error);
     throw new ChatSDKError(
       "bad_request:database",
       "Failed to get user by email"
@@ -55,10 +59,13 @@ export async function getUser(email: string): Promise<User[]> {
 
 export async function createUser(email: string, password: string) {
   const hashedPassword = generateHashedPassword(password);
-
+  console.log("createUser called with email:", email);
   try {
-    return await db.insert(user).values({ email, password: hashedPassword });
+    const result = await db.insert(user).values({ email, password: hashedPassword });
+    console.log("createUser result:", result);
+    return result;
   } catch (_error) {
+    console.error("createUser error:", _error);
     throw new ChatSDKError("bad_request:database", "Failed to create user");
   }
 }

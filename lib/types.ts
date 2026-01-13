@@ -55,4 +55,5 @@ export type Attachment = {
   name: string;
   url: string;
   contentType: string;
+  extractedText?: string; // Text extracted from PDF/TXT files
 };

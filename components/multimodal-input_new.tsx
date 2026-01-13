@@ -148,53 +148,21 @@ function PureMultimodalInput({
   const submitForm = useCallback(() => {
     window.history.pushState({}, "", `/chat/${chatId}`);
 
-    // Map attachments to correct format for chat API
-    const mappedParts = attachments
-      .map((attachment) => {
-        if (
-          attachment.contentType === "application/pdf" ||
-          attachment.contentType === "text/plain"
-        ) {
-          // PDF/TXT: send as file part with extracted text
-          // This way we can show a nice indicator in UI while sending full text to AI
-          const fullText = attachment.extractedText || "";
-          return {
-            type: "file" as const,
-            name: attachment.name,
-            url: attachment.url || "",
-            mediaType: attachment.contentType,
-            extractedText: fullText, // Full text for AI
-          };
-        } else if (
-          attachment.contentType === "image/png" ||
-          attachment.contentType === "image/jpeg" ||
-          attachment.contentType === "image/jpg"
-        ) {
-          // Images: send as file part with base64 url
-          return {
-            type: "file" as const,
-            url: attachment.url, // base64 data URL
-            name: attachment.name,
-            mediaType: attachment.contentType,
-          };
-        }
-        // Fallback: ignore unsupported types
-        return undefined;
-      })
-      .filter((part) => part !== undefined);
-
-    // Build parts array - only include text part if there's actual input
-    const parts: any[] = [...mappedParts];
-    if (input && input.trim()) {
-      parts.push({
-        type: "text" as const,
-        text: input,
-      });
-    }
-
     sendMessage({
       role: "user",
-      parts,
+      parts: [
+        ...attachments.map((attachment) => ({
+          type: "file" as const,
+          url: attachment.url,
+          name: attachment.name,
+          mediaType: attachment.contentType,
+          extractedText: attachment.extractedText, // Include extracted text
+        })),
+        {
+          type: "text",
+          text: input,
+        },
+      ],
     });
 
     setAttachments([]);
@@ -261,7 +229,7 @@ function PureMultimodalInput({
           url,
           name: name || pathname,
           contentType,
-          extractedText: extractedText || "", // Ensure extractedText is a string
+          extractedText, // Include extracted text from PDF/TXT
         };
       }
       const { error, details } = await response.json();

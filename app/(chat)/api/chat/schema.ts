@@ -2,14 +2,15 @@ import { z } from "zod";
 
 const textPartSchema = z.object({
   type: z.enum(["text"]),
-  text: z.string().min(1).max(2000),
+  text: z.string().min(1).max(200000), // Increased from 2000 to support full PDF extraction (~50k tokens max)
 });
 
 const filePartSchema = z.object({
   type: z.enum(["file"]),
-  mediaType: z.enum(["image/jpeg", "image/png"]),
+  mediaType: z.enum(["image/jpeg", "image/png", "application/pdf", "text/plain"]),
   name: z.string().min(1).max(100),
-  url: z.string().url(),
+  url: z.string(),
+  extractedText: z.string().max(200000).optional(), // For PDF/TXT files
 });
 
 const partSchema = z.union([textPartSchema, filePartSchema]);

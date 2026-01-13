@@ -119,6 +119,10 @@ export async function POST(request: Request) {
       selectedVisibilityType: VisibilityType;
     } = requestBody;
 
+    // Troubleshooting log: incoming chatId and request body
+    console.log("[POST /api/chat] Incoming chatId:", id);
+    console.log("[POST /api/chat] Request body:", requestBody);
+
     // ORIGINAL: Authentication check - COMMENTED OUT (authentication disabled)
     // const session = await auth();
     // if (!session?.user) {
@@ -145,8 +149,14 @@ export async function POST(request: Request) {
     let messagesFromDb: DBMessage[] = [];
 
     if (chat) {
+      // Troubleshooting log: found chat in DB
+      console.log("[POST /api/chat] Found chat:", chat);
       messagesFromDb = await getMessagesByChatId({ id });
+      // Troubleshooting log: found messages for chat
+      console.log("[POST /api/chat] Found messages:", messagesFromDb);
     } else {
+      // Troubleshooting log: chat not found, will create new
+      console.log("[POST /api/chat] Chat not found, creating new chat with id:", id);
       const title = await generateTitleFromUserMessage({ message });
       await saveChat({
         id,
@@ -163,19 +173,24 @@ export async function POST(request: Request) {
       if (part.type === 'file') {
         // PDF/TXT files with extracted text -> text parts
         if (part.extractedText) {
+          console.log(`📄 Converting PDF/TXT to text: ${part.name}`);
           return {
             type: 'text' as const,
             text: `[File: ${part.name}]\n\n${part.extractedText}`,
           };
         }
-
+        
         // Image files with base64 data URL -> image parts for vision
         // URL format: data:image/jpeg;base64,...
-        const isImage = part.mediaType === 'image/png' ||
+        const isImage = part.mediaType === 'image/png' || 
                        part.mediaType === 'image/jpeg' ||
                        (part.url && part.url.startsWith('data:image/'));
-
+        
         if (isImage) {
+          console.log(`🖼️ Image detected (will convert after model conversion): ${part.name}`, {
+            mediaType: part.mediaType,
+            urlPrefix: part.url?.substring(0, 30)
+          });
           // Keep as file part - convertToModelMessages() needs this format
           // We'll convert to image part AFTER convertToModelMessages()
           return part;
@@ -190,6 +205,8 @@ export async function POST(request: Request) {
       ...message,
       parts: processedMessageParts,
     };
+
+    console.log(`📝 Processed message parts:`, processedMessage.parts.map((p: any) => ({ type: p.type, hasText: !!p.text, textLength: p.text?.length })));
 
     const uiMessages = [...convertToUIMessages(messagesFromDb), processedMessage];
 
@@ -240,7 +257,9 @@ export async function POST(request: Request) {
       execute: ({ writer: dataStream }) => {
         // Convert UI messages to model messages first
         const modelMessages = convertToModelMessages(uiMessages);
-
+        
+        console.log(`🔍 Model messages before processing:`, JSON.stringify(modelMessages.slice(-1), null, 2));
+        
         // Process messages for Azure OpenAI compatibility
         // convertToModelMessages() may have converted file parts, now we need to handle images
         const processedModelMessages = modelMessages.map((msg: any) => {
@@ -250,21 +269,29 @@ export async function POST(request: Request) {
               if (part.type === 'file' && part.data) {
                 // Check if it's a base64 image
                 if (typeof part.data === 'string' && part.data.startsWith('data:image/')) {
+                  console.log(`🖼️ Converting file part to image for vision:`, {
+                    dataPrefix: part.data.substring(0, 30)
+                  });
                   return {
                     type: 'image' as const,
                     image: part.data, // base64 data URL
                   };
                 }
-
+                
                 // Other file parts (shouldn't happen)
+                console.warn(`⚠️ Unexpected non-image file part:`, part);
                 return {
                   type: 'text' as const,
                   text: `[Unsupported file]`,
                 };
               }
-
+              
               // Image parts that are already correct
               if (part.type === 'image') {
+                console.log(`✅ Image part already correct:`, {
+                  hasImage: !!part.image,
+                  isBase64: part.image?.startsWith('data:image/')
+                });
                 return part;
               }
               
@@ -275,7 +302,9 @@ export async function POST(request: Request) {
           }
           return msg;
         });
-
+        
+        console.log(`✅ Model messages after processing:`, JSON.stringify(processedModelMessages.slice(-1), null, 2));
+        
         const result = streamText({
           model: myProvider.languageModel(selectedChatModel),
           system: systemPrompt({ 

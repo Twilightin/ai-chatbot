@@ -171,3 +171,24 @@ export const stream = pgTable(
 );
 
 export type Stream = InferSelectModel<typeof stream>;
+
+export const memory = pgTable("Memory", {
+  id: uuid("id").primaryKey().notNull().defaultRandom(),
+  userId: uuid("userId")
+    .notNull()
+    .references(() => user.id, { onDelete: "cascade" }),
+  chatId: uuid("chatId").references(() => chat.id, { onDelete: "set null" }),
+  category: varchar("category", { 
+    length: 50,
+  }).notNull(),
+  key: text("key").notNull(),
+  value: text("value").notNull(),
+  importance: text("importance").notNull().default("5"),
+  createdAt: timestamp("createdAt").notNull(),
+  updatedAt: timestamp("updatedAt").notNull(),
+  lastAccessedAt: timestamp("lastAccessedAt").notNull(),
+  accessCount: text("accessCount").notNull().default("1"),
+  metadata: jsonb("metadata").$type<Record<string, any> | null>(),
+});
+
+export type Memory = InferSelectModel<typeof memory>;

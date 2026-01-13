@@ -16,8 +16,6 @@ import {
 import type { ModelCatalog } from "tokenlens/core";
 import { fetchModels } from "tokenlens/fetch";
 import { getUsage } from "tokenlens/helpers";
-import { ZodError } from "zod";
-// ORIGINAL: Authentication import - COMMENTED OUT (authentication disabled)
 import { auth, type UserType } from "@/app/(auth)/auth";
 import type { VisibilityType } from "@/components/visibility-selector";
 import { entitlementsByUserType } from "@/lib/ai/entitlements";
@@ -40,11 +38,6 @@ import {
   updateChatLastContextById,
 } from "@/lib/db/queries";
 import type { DBMessage } from "@/lib/db/schema";
-import {
-  getMemoriesByUserId,
-  formatMemoriesForContext,
-  extractMemoriesFromConversation,
-} from "@/lib/db/memory";
 import { ChatSDKError } from "@/lib/errors";
 import type { ChatMessage } from "@/lib/types";
 import type { AppUsage } from "@/lib/usage";
@@ -98,11 +91,7 @@ export async function POST(request: Request) {
   try {
     const json = await request.json();
     requestBody = postRequestBodySchema.parse(json);
-  } catch (error) {
-    console.error("❌ Schema validation failed:", error);
-    if (error instanceof ZodError) {
-      console.error("Validation errors:", JSON.stringify(error.errors, null, 2));
-    }
+  } catch (_) {
     return new ChatSDKError("bad_request:api").toResponse();
   }
 
@@ -119,79 +108,47 @@ export async function POST(request: Request) {
       selectedVisibilityType: VisibilityType;
     } = requestBody;
 
-    // ORIGINAL: Authentication check - COMMENTED OUT (authentication disabled)
-    // const session = await auth();
-    // if (!session?.user) {
-    //   return new ChatSDKError("unauthorized:chat").toResponse();
-    // }
-
-    // Use real authentication
     const session = await auth();
+
     if (!session?.user) {
       return new ChatSDKError("unauthorized:chat").toResponse();
     }
 
-    // ORIGINAL: Rate limiting - COMMENTED OUT (authentication disabled)
-    // const userType: UserType = session.user.type;
-    // const messageCount = await getMessageCountByUserId({
-    //   id: session.user.id,
-    //   differenceInHours: 24,
-    // });
-    // if (messageCount > entitlementsByUserType[userType].maxMessagesPerDay) {
-    //   return new ChatSDKError("rate_limit:chat").toResponse();
-    // }
+    const userType: UserType = session.user.type;
+
+    const messageCount = await getMessageCountByUserId({
+      id: session.user.id,
+      differenceInHours: 24,
+    });
+
+    if (messageCount > entitlementsByUserType[userType].maxMessagesPerDay) {
+      return new ChatSDKError("rate_limit:chat").toResponse();
+    }
 
     const chat = await getChatById({ id });
     let messagesFromDb: DBMessage[] = [];
 
     if (chat) {
+      if (chat.userId !== session.user.id) {
+        return new ChatSDKError("forbidden:chat").toResponse();
+      }
+      // Only fetch messages if chat already exists
       messagesFromDb = await getMessagesByChatId({ id });
     } else {
-      const title = await generateTitleFromUserMessage({ message });
+      const title = await generateTitleFromUserMessage({
+        message,
+      });
+
       await saveChat({
         id,
         userId: session.user.id,
         title,
         visibility: selectedVisibilityType,
       });
+      // New chat - no need to fetch messages, it's empty
     }
 
-    // Process message parts - convert PDF/TXT files with extracted text to text parts
-    // Images (PNG/JPG) are converted to image parts for Azure OpenAI vision
-    // Azure OpenAI doesn't support file content types, so we convert them appropriately
-    const processedMessageParts = message.parts.map((part: any) => {
-      if (part.type === 'file') {
-        // PDF/TXT files with extracted text -> text parts
-        if (part.extractedText) {
-          return {
-            type: 'text' as const,
-            text: `[File: ${part.name}]\n\n${part.extractedText}`,
-          };
-        }
-
-        // Image files with base64 data URL -> image parts for vision
-        // URL format: data:image/jpeg;base64,...
-        const isImage = part.mediaType === 'image/png' ||
-                       part.mediaType === 'image/jpeg' ||
-                       (part.url && part.url.startsWith('data:image/'));
-
-        if (isImage) {
-          // Keep as file part - convertToModelMessages() needs this format
-          // We'll convert to image part AFTER convertToModelMessages()
-          return part;
-        }
-      }
-      
-      // Keep other parts as-is (text, etc.)
-      return part;
-    });
-
-    const processedMessage = {
-      ...message,
-      parts: processedMessageParts,
-    };
-
-    const uiMessages = [...convertToUIMessages(messagesFromDb), processedMessage];
+    const uiMessages = [...convertToUIMessages(messagesFromDb), message];
 
     const { longitude, latitude, city, country } = geolocation(request);
 
@@ -201,22 +158,6 @@ export async function POST(request: Request) {
       city,
       country,
     };
-
-    // Load user memories for context
-    let userMemoriesContext = "";
-    try {
-      const memories = await getMemoriesByUserId(session.user.id, {
-        minImportance: 5, // Only include important memories
-        limit: 20, // Limit to prevent token overflow
-      });
-      userMemoriesContext = formatMemoriesForContext(memories);
-      if (userMemoriesContext) {
-        console.log(`💭 Loaded ${memories.length} memories for user context`);
-      }
-    } catch (error) {
-      console.error("Failed to load user memories:", error);
-      // Continue without memories if loading fails
-    }
 
     await saveMessages({
       messages: [
@@ -238,52 +179,10 @@ export async function POST(request: Request) {
 
     const stream = createUIMessageStream({
       execute: ({ writer: dataStream }) => {
-        // Convert UI messages to model messages first
-        const modelMessages = convertToModelMessages(uiMessages);
-
-        // Process messages for Azure OpenAI compatibility
-        // convertToModelMessages() may have converted file parts, now we need to handle images
-        const processedModelMessages = modelMessages.map((msg: any) => {
-          if (msg.content && Array.isArray(msg.content)) {
-            const processedContent = msg.content.map((part: any) => {
-              // File parts with base64 image data -> convert to image parts
-              if (part.type === 'file' && part.data) {
-                // Check if it's a base64 image
-                if (typeof part.data === 'string' && part.data.startsWith('data:image/')) {
-                  return {
-                    type: 'image' as const,
-                    image: part.data, // base64 data URL
-                  };
-                }
-
-                // Other file parts (shouldn't happen)
-                return {
-                  type: 'text' as const,
-                  text: `[Unsupported file]`,
-                };
-              }
-
-              // Image parts that are already correct
-              if (part.type === 'image') {
-                return part;
-              }
-              
-              // Keep all other parts as-is (text, etc.)
-              return part;
-            });
-            return { ...msg, content: processedContent };
-          }
-          return msg;
-        });
-
         const result = streamText({
           model: myProvider.languageModel(selectedChatModel),
-          system: systemPrompt({ 
-            selectedChatModel, 
-            requestHints,
-            userMemories: userMemoriesContext 
-          }),
-          messages: processedModelMessages,
+          system: systemPrompt({ selectedChatModel, requestHints }),
+          messages: convertToModelMessages(uiMessages),
           stopWhen: stepCountIs(5),
           experimental_activeTools:
             selectedChatModel === "chat-model-reasoning"
@@ -299,7 +198,10 @@ export async function POST(request: Request) {
             getWeather,
             createDocument: createDocument({ session, dataStream }),
             updateDocument: updateDocument({ session, dataStream }),
-            requestSuggestions: requestSuggestions({ session, dataStream }),
+            requestSuggestions: requestSuggestions({
+              session,
+              dataStream,
+            }),
           },
           experimental_telemetry: {
             isEnabled: isProductionEnvironment,
@@ -360,29 +262,6 @@ export async function POST(request: Request) {
           })),
         });
 
-        // Extract and save memories from the conversation
-        try {
-          const userMessageText = message.parts
-            .map((p: any) => p.text || "")
-            .join(" ");
-          const aiMessageText = messages
-            .filter((m) => m.role === "assistant")
-            .map((m) => m.parts.map((p: any) => p.text || "").join(" "))
-            .join(" ");
-
-          if (userMessageText) {
-            await extractMemoriesFromConversation({
-              userId: session.user.id,
-              chatId: id,
-              userMessage: userMessageText,
-              aiResponse: aiMessageText,
-            });
-          }
-        } catch (error) {
-          console.error("Failed to extract memories:", error);
-          // Don't fail the whole request if memory extraction fails
-        }
-
         if (finalMergedUsage) {
           try {
             await updateChatLastContextById({
@@ -440,18 +319,17 @@ export async function DELETE(request: Request) {
     return new ChatSDKError("bad_request:api").toResponse();
   }
 
-  // ORIGINAL: Authentication check - COMMENTED OUT (authentication disabled)
-  // const session = await auth();
-  // if (!session?.user) {
-  //   return new ChatSDKError("unauthorized:chat").toResponse();
-  // }
+  const session = await auth();
+
+  if (!session?.user) {
+    return new ChatSDKError("unauthorized:chat").toResponse();
+  }
 
   const chat = await getChatById({ id });
 
-  // ORIGINAL: User ownership check - COMMENTED OUT (authentication disabled)
-  // if (chat?.userId !== session.user.id) {
-  //   return new ChatSDKError("forbidden:chat").toResponse();
-  // }
+  if (chat?.userId !== session.user.id) {
+    return new ChatSDKError("forbidden:chat").toResponse();
+  }
 
   const deletedChat = await deleteChatById({ id });
 

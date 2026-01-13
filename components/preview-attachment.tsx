@@ -1,3 +1,4 @@
+import { FileText, File as FileIcon } from "lucide-react";
 import Image from "next/image";
 import type { Attachment } from "@/lib/types";
 import { Loader } from "./elements/loader";
@@ -28,9 +29,20 @@ export const PreviewAttachment = ({
           src={url}
           width={64}
         />
+      ) : contentType === "application/pdf" ? (
+        <div className="flex size-full flex-col items-center justify-center gap-1 bg-slate-100 text-slate-600 dark:bg-slate-800/50 dark:text-slate-400">
+          <FileText size={24} strokeWidth={2} />
+          <span className="font-medium text-[9px]">PDF</span>
+        </div>
+      ) : contentType === "text/plain" ? (
+        <div className="flex size-full flex-col items-center justify-center gap-1 bg-blue-50 text-blue-600 dark:bg-blue-950/30 dark:text-blue-400">
+          <FileIcon size={24} strokeWidth={2} />
+          <span className="font-medium text-[9px]">TXT</span>
+        </div>
       ) : (
-        <div className="flex size-full items-center justify-center text-muted-foreground text-xs">
-          File
+        <div className="flex size-full flex-col items-center justify-center gap-1 bg-gray-100 text-gray-500 dark:bg-gray-800/50 dark:text-gray-400">
+          <FileIcon size={24} strokeWidth={2} />
+          <span className="font-medium text-[9px]">File</span>
         </div>
       )}
 
